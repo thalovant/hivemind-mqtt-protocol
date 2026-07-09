@@ -31,9 +31,13 @@ The hub does not bind any TCP port. Both hub and satellites are broker
 ## Topic scheme
 
 ```
-<prefix>/<api_key>/in      # satellite → master  (master subscribes <prefix>/+/in)
-<prefix>/<api_key>/out     # master → satellite
-<prefix>/<api_key>/status  # retained LWT presence (online / offline)
+<prefix>/<api_key>/in      # satellite → master, legacy standalone layout
+<prefix>/<api_key>/out     # master → satellite, legacy standalone layout
+<prefix>/<api_key>/status  # retained LWT presence, legacy standalone layout
+
+<prefix>/<hub_id>/c2s/<api_key>     # satellite → master, managed hub layout
+<prefix>/<hub_id>/s2c/<api_key>     # master → satellite, managed hub layout
+<prefix>/<hub_id>/status/<api_key>  # retained LWT presence, managed hub layout
 ```
 
 Defaults: `prefix = hivemind`.
@@ -42,6 +46,9 @@ The `api_key` segment is the satellite's HiveMind access key. It is unique per
 client, so the master can look up the matching DB record from the topic as soon
 as the first frame arrives; without the matching crypto key the payload
 ciphertext remains useless.
+
+When `hub_id` is configured, the hub uses the managed layout so broker ACLs can
+grant the hub one bounded topic tree.
 
 ## Crypto
 
@@ -87,11 +94,10 @@ master's request and derive a mismatched key.
 
 ### Master self-presence
 
-The master publishes its own presence to `<prefix>/<master_name>/status`
-(`<master_name>` = `NodeIdentity.name`). That topic also matches the master's
-own `<prefix>/+/status` subscription, so the master receives its own status
-echo. The master recognises and ignores this self-echo, so it never treats
-itself as a satellite peer.
+The master publishes its own presence to `<prefix>/<master_name>/status` in
+standalone mode and `<prefix>/<hub_id>/status/<master_name>` in managed mode.
+The managed Last Will therefore remains inside the hub-owned ACL tree. The
+master recognises and ignores its retained self-echo.
 
 ## Authentication layers
 

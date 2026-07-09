@@ -131,6 +131,30 @@ class TestTopics:
         p = _make_protocol({"topic_prefix": "hm", "api_key": "mykey"})
         assert p.in_topic("x") == "hm/x/in"
 
+    def test_hub_scoped_topics_match_sdk_layout(self):
+        p = _make_protocol({"topic_prefix": "hm", "hub_id": "hub-1"})
+        assert p.in_topic("sat1") == "hm/hub-1/c2s/sat1"
+        assert p.out_topic("sat1") == "hm/hub-1/s2c/sat1"
+        assert p.status_topic("sat1") == "hm/hub-1/status/sat1"
+
+    def test_configured_broker_client_id_wins(self):
+        p = _make_protocol({"client_id": "fixed-client"})
+        assert p._broker_client_id() == "fixed-client"
+
+    def test_broker_client_id_uses_hashed_replica_suffix(self):
+        p = _make_protocol({"hub_id": "hub-1", "client_id_suffix": "pod-a"})
+        other = _make_protocol({"hub_id": "hub-1", "client_id_suffix": "pod-b"})
+
+        assert p._broker_client_id().startswith("hivemind-hub-1-")
+        assert p._broker_client_id() != other._broker_client_id()
+        assert "pod-a" not in p._broker_client_id()
+
+    def test_managed_master_will_stays_inside_the_hub_acl(self):
+        p = _make_protocol({"topic_prefix": "hm", "hub_id": "hub-1"})
+
+        assert p.master_status_topic() == "hm/hub-1/status/testkey"
+        assert p.master_status_topic().startswith("hm/hub-1/")
+
     def test_c2s_wildcard(self):
         p = _make_protocol()
         assert p.in_wildcard() == "hivemind/+/in"
@@ -139,6 +163,11 @@ class TestTopics:
         p = _make_protocol()
         assert p.status_wildcard() == "hivemind/+/status"
 
+    def test_hub_scoped_wildcards(self):
+        p = _make_protocol({"hub_id": "hub-1"})
+        assert p.in_wildcard() == "hivemind/hub-1/c2s/+"
+        assert p.status_wildcard() == "hivemind/hub-1/status/+"
+
     def test_api_key_from_in_topic(self):
         topic = "hivemind/sat42/in"
         assert HiveMindMqttProtocol._api_key_from_topic(topic) == "sat42"
@@ -146,6 +175,11 @@ class TestTopics:
     def test_api_key_from_status_topic(self):
         topic = "hivemind/sat99/status"
         assert HiveMindMqttProtocol._api_key_from_topic(topic) == "sat99"
+
+    def test_api_key_from_hub_scoped_topic(self):
+        topic = "hivemind/hub-1/c2s/sat99"
+        assert HiveMindMqttProtocol._api_key_from_topic(topic) == "sat99"
+        assert HiveMindMqttProtocol._direction_from_topic(topic) == "c2s"
 
     def test_api_key_short_topic_returns_none(self):
         assert HiveMindMqttProtocol._api_key_from_topic("bad") is None
@@ -365,6 +399,16 @@ class TestLWT:
 
         p.hm_protocol.handle_message.assert_called_once()
 
+    def test_hub_scoped_c2s_message_routed_to_handle_message(self):
+        p = _make_protocol({"hub_id": "hub-1"})
+        p._build_client_connection("sat1")
+        p.hm_protocol.handle_message.reset_mock()
+
+        msg = self._make_msg("hivemind/hub-1/c2s/sat1", b"payload")
+        p._on_message(p._mqtt, None, msg)
+
+        p.hm_protocol.handle_message.assert_called_once()
+
     def test_unknown_peer_auto_registered_on_c2s(self):
         p = _make_protocol()
         assert "newsat" not in p._peers
@@ -525,7 +569,7 @@ class TestPasswordHandshake:
     def test_user_with_password_sets_pswd_handshake(self):
         p = _make_protocol()
         user = p.hm_protocol.db.get_client_by_api_key.return_value
-        user.password = "s3cr3t"
+        user.password = "correct horse battery staple satellite 2026"
         conn = p._build_client_connection("sat1")
         assert conn is not None
         assert conn.pswd_handshake is not None
@@ -696,6 +740,16 @@ class TestRun:
         mock_client_instance.connect.assert_called_once_with("127.0.0.1", 1883, keepalive=60)
         mock_client_instance.loop_forever.assert_called_once()
 
+    def test_run_uses_configured_client_id(self):
+        p = _make_protocol({"client_id": "hm-fixed"})
+        mock_client_instance = self._make_mock_mqtt_client()
+
+        import paho.mqtt.client as paho_mqtt
+        with patch.object(paho_mqtt, "Client", return_value=mock_client_instance) as client_cls:
+            p.run()
+
+        client_cls.assert_called_once_with(client_id="hm-fixed")
+
     def test_run_sets_callbacks(self):
         """run() installs on_connect, on_message, on_disconnect."""
         p = _make_protocol()
@@ -750,6 +804,7 @@ class TestRun:
             certfile="/client.crt",
             keyfile="/client.key",
         )
+        mock_client_instance.tls_insecure_set.assert_not_called()
 
     def test_run_tls_disabled(self):
         """run() does not call tls_set when tls=False (default)."""
@@ -761,6 +816,7 @@ class TestRun:
             p.run()
 
         mock_client_instance.tls_set.assert_not_called()
+        mock_client_instance.tls_insecure_set.assert_not_called()
 
     def test_run_publishes_hub_online(self):
         """run() publishes 'online' to the hub status topic after connect."""
@@ -790,6 +846,18 @@ class TestRun:
         args = mock_client_instance.will_set.call_args[0]
         assert "/status" in args[0]
         assert args[1] == "offline"
+
+    def test_run_managed_will_is_authorized_by_the_hub_topic_tree(self):
+        p = _make_protocol({"topic_prefix": "hm", "hub_id": "hub-1"})
+        mock_client_instance = self._make_mock_mqtt_client()
+
+        import paho.mqtt.client as paho_mqtt
+        with patch.object(paho_mqtt, "Client", return_value=mock_client_instance):
+            p.run()
+
+        mock_client_instance.will_set.assert_called_once_with(
+            "hm/hub-1/status/testkey", "offline", qos=1, retain=True
+        )
 
     def test_run_idle_sweep_thread_started(self):
         """run() starts the idle-sweep daemon thread when idle_timeout > 0."""
