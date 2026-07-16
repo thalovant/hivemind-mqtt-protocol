@@ -75,6 +75,13 @@ else is passed through as `bytes` and decoded as a binary bitstring frame.
 
 ## Connection lifecycle
 
+The master uses Paho's asynchronous first connection and reconnect loop. A
+failed DNS lookup, refused connection, or TLS handshake therefore remains a
+retryable transport failure instead of terminating the network-protocol
+thread. The optional `health_file` exists only after a successful broker
+CONNACK and is removed on disconnect, allowing orchestration readiness to fail
+closed when MQTT is unavailable.
+
 MQTT has no connection event the master can hook, so there is no `accept()`
 loop. A logical per-satellite connection is created lazily on the **first
 inbound frame** on `<prefix>/<api_key>/in`:

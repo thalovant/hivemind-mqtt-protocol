@@ -737,8 +737,16 @@ class TestRun:
         with patch.object(paho_mqtt, "Client", return_value=mock_client_instance):
             p.run()
 
-        mock_client_instance.connect.assert_called_once_with("127.0.0.1", 1883, keepalive=60)
-        mock_client_instance.loop_forever.assert_called_once()
+        mock_client_instance.connect_async.assert_called_once_with(
+            "127.0.0.1", 1883, keepalive=60
+        )
+        mock_client_instance.loop_forever.assert_called_once_with(
+            retry_first_connection=True
+        )
+        mock_client_instance.reconnect_delay_set.assert_called_once_with(
+            min_delay=1,
+            max_delay=30,
+        )
 
     def test_run_uses_configured_client_id(self):
         p = _make_protocol({"client_id": "hm-fixed"})
@@ -818,14 +826,21 @@ class TestRun:
         mock_client_instance.tls_set.assert_not_called()
         mock_client_instance.tls_insecure_set.assert_not_called()
 
-    def test_run_publishes_hub_online(self):
-        """run() publishes 'online' to the hub status topic after connect."""
-        p = _make_protocol({"api_key": "testkey"})
+    def test_run_tls_insecure_requires_explicit_opt_in(self):
+        p = _make_protocol({"tls": True, "tls_insecure": True})
         mock_client_instance = self._make_mock_mqtt_client()
 
         import paho.mqtt.client as paho_mqtt
         with patch.object(paho_mqtt, "Client", return_value=mock_client_instance):
             p.run()
+
+        mock_client_instance.tls_insecure_set.assert_called_once_with(True)
+
+    def test_on_connect_publishes_hub_online(self):
+        """A successful CONNACK publishes retained hub presence."""
+        p = _make_protocol({"api_key": "testkey"})
+        mock_client_instance = self._make_mock_mqtt_client()
+        p._on_connect(mock_client_instance, None, {}, 0)
 
         publish_calls = mock_client_instance.publish.call_args_list
         topics_published = [c[0][0] for c in publish_calls]
@@ -907,4 +922,17 @@ class TestRun:
         with patch.object(paho_mqtt, "Client", return_value=mock_client_instance):
             p.run()
 
-        mock_client_instance.connect.assert_called_once_with("localhost", 1883, keepalive=60)
+        mock_client_instance.connect_async.assert_called_once_with(
+            "localhost", 1883, keepalive=60
+        )
+
+    def test_broker_callbacks_control_health_marker(self, tmp_path):
+        marker = tmp_path / "mqtt-ready"
+        p = _make_protocol({"health_file": str(marker)})
+        mock_client_instance = self._make_mock_mqtt_client()
+
+        p._on_connect(mock_client_instance, None, {}, 0)
+        assert marker.read_text(encoding="utf-8") == "ready\n"
+
+        p._on_disconnect(mock_client_instance, None, 1)
+        assert not marker.exists()
