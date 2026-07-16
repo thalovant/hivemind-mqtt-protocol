@@ -20,20 +20,25 @@ derived from the topic hierarchy.
 ### Topic scheme
 
 ```
-<prefix>/<api_key>/in      # satellite → master  (master subscribes <prefix>/+/in)
-<prefix>/<api_key>/out     # master → satellite
-<prefix>/<api_key>/status  # retained LWT presence (online / offline)
+<prefix>/<api_key>/in      # satellite → master, legacy standalone layout
+<prefix>/<api_key>/out     # master → satellite, legacy standalone layout
+<prefix>/<api_key>/status  # retained LWT presence, legacy standalone layout
+
+<prefix>/<hub_id>/c2s/<api_key>     # satellite → master, managed hub layout
+<prefix>/<hub_id>/s2c/<api_key>     # master → satellite, managed hub layout
+<prefix>/<hub_id>/status/<api_key>  # retained LWT presence, managed hub layout
 ```
 
 Defaults: `prefix = hivemind`. Each satellite's HiveMind access key (`api_key`)
 is its own topic segment — it is unique per client and identifies which DB
-record to look up as soon as the first frame arrives.
+record to look up as soon as the first frame arrives. When `hub_id` is
+configured, topics are scoped under that hub so managed broker ACLs can grant
+one hub-owned topic tree.
 
-The master also publishes its own presence to `<prefix>/<master_name>/status`
-(where `<master_name>` is the master's `NodeIdentity.name`). That topic matches
-the master's own `<prefix>/+/status` subscription, so the master receives its
-own status echo; this self-echo is explicitly ignored, so the master never
-treats itself as a satellite peer.
+The master also publishes its own presence. Standalone mode uses
+`<prefix>/<master_name>/status`; managed mode uses
+`<prefix>/<hub_id>/status/<master_name>`, keeping the Last Will inside the
+hub-owned ACL tree. The master ignores its retained self-echo.
 
 ## Crypto
 
@@ -73,9 +78,13 @@ Two independent layers:
 | `tls_ca_certs` | — | Path to CA bundle |
 | `tls_certfile` | — | Path to client cert (mTLS) |
 | `tls_keyfile` | — | Path to client key (mTLS) |
+| `tls_insecure` | `false` | Skip broker certificate verification for trusted internal brokers |
 | `topic_prefix` | `hivemind` | Topic namespace prefix |
+| `hub_id` | — | Optional hub namespace for managed broker ACLs |
 | `qos` | `1` | Default MQTT QoS for control frames |
 | `idle_timeout` | `300` | Seconds of silence before evicting a peer (0 = off) |
+| `client_id` | — | Explicit broker client id for special deployments |
+| `client_id_suffix` | `$HOSTNAME` | Replica-specific suffix hashed into the default broker client id |
 
 ## Usage
 

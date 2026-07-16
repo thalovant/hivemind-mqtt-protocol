@@ -145,6 +145,7 @@ class FakeMqttClient:
         # a handler that publishes does not synchronously re-enter on_message.
         self._inbox: "queue.Queue[Optional[Tuple[str, bytes]]]" = queue.Queue()
         self._dispatch_thread: Optional[threading.Thread] = None
+        self._async_connect: Optional[Tuple[str, int, int]] = None
 
     # -- configuration mirrors -----------------------------------------
 
@@ -154,6 +155,12 @@ class FakeMqttClient:
 
     def tls_set(self, ca_certs=None, certfile=None, keyfile=None, **_: Any) -> None:
         self.tls = {"ca_certs": ca_certs, "certfile": certfile, "keyfile": keyfile}
+
+    def tls_insecure_set(self, value: bool) -> None:
+        self.tls_insecure = value
+
+    def reconnect_delay_set(self, min_delay: int = 1, max_delay: int = 120) -> None:
+        self.reconnect_delays = (min_delay, max_delay)
 
     def will_set(self, topic: str, payload=None, qos: int = 0, retain: bool = False) -> None:
         self._will = (topic, payload, qos, retain)
@@ -176,6 +183,10 @@ class FakeMqttClient:
         # subscriptions registered in on_connect take effect immediately.
         if self.on_connect is not None:
             self.on_connect(self, self._userdata, {}, 0)
+        return 0
+
+    def connect_async(self, host: str, port: int = 1883, keepalive: int = 60) -> int:
+        self._async_connect = (host, port, keepalive)
         return 0
 
     def _dispatch_loop(self) -> None:
@@ -218,7 +229,10 @@ class FakeMqttClient:
     def loop_stop(self) -> None:
         pass
 
-    def loop_forever(self) -> None:
+    def loop_forever(self, retry_first_connection: bool = False) -> None:
+        del retry_first_connection
+        if not self._connected and self._async_connect is not None:
+            self.connect(*self._async_connect)
         # Block until disconnect/stop so the protocol's run() thread can sit
         # here exactly as it would against a real broker.
         self._stop.wait()

@@ -32,9 +32,12 @@ Two layers, consistent with the design doc:
      arrives.  No separate credential handshake is needed at the MQTT layer.
 """
 
+import hashlib
+import os
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import paho.mqtt.client as mqtt
@@ -76,7 +79,14 @@ class HiveMindMqttProtocol(NetworkProtocol):
         tls_ca_certs       (str)  None  — path to CA bundle
         tls_certfile       (str)  None  — path to client cert (mTLS)
         tls_keyfile        (str)  None  — path to client key  (mTLS)
+        tls_insecure       (bool) False — explicitly disable verification
+        health_file        (str)  None  — broker-ready marker for probes
+        reconnect_min_delay (int) 1    — initial reconnect delay
+        reconnect_max_delay (int) 30   — maximum reconnect delay
         topic_prefix       (str)  "hivemind"
+        hub_id             (str)  None  — optional hub topic namespace
+        client_id          (str)  None  — exact broker client id override
+        client_id_suffix   (str)  $HOSTNAME — replica-safe suffix source
         qos                (int)  1
         idle_timeout       (int)  300   — seconds of silence before eviction; 0 disables
     """
@@ -100,34 +110,82 @@ class HiveMindMqttProtocol(NetworkProtocol):
     def _prefix(self) -> str:
         return str(self._cfg("topic_prefix") or "hivemind")
 
+    def _hub_id(self) -> str:
+        return str(self._cfg("hub_id") or "").strip().strip("/")
+
+    def _topic_base(self) -> str:
+        prefix = self._prefix().strip("/")
+        hub_id = self._hub_id()
+        return f"{prefix}/{hub_id}" if hub_id else prefix
+
     def _qos(self, is_bin: bool = False) -> int:
         if is_bin:
             return 0
         v = self._cfg("qos")
         return int(v) if v is not None else 1
 
+    def _health_file(self) -> Optional[Path]:
+        configured = str(self._cfg("health_file") or "").strip()
+        return Path(configured) if configured else None
+
+    def _set_broker_ready(self, ready: bool) -> None:
+        marker = self._health_file()
+        if marker is None:
+            return
+        try:
+            if ready:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("ready\n", encoding="utf-8")
+            else:
+                marker.unlink(missing_ok=True)
+        except OSError as exc:
+            LOG.warning(f"[MQTT] Failed to update broker readiness marker: {exc}")
+
     # topic builders ---------------------------------------------------
 
     def in_topic(self, api_key: str) -> str:
         """Inbound topic: satellite → master."""
-        return f"{self._prefix()}/{api_key}/in"
+        if self._hub_id():
+            return f"{self._topic_base()}/c2s/{api_key}"
+        return f"{self._topic_base()}/{api_key}/in"
 
     def out_topic(self, api_key: str) -> str:
         """Outbound topic: master → satellite."""
-        return f"{self._prefix()}/{api_key}/out"
+        if self._hub_id():
+            return f"{self._topic_base()}/s2c/{api_key}"
+        return f"{self._topic_base()}/{api_key}/out"
 
     def status_topic(self, api_key: str) -> str:
         """Retained LWT presence topic."""
-        return f"{self._prefix()}/{api_key}/status"
+        if self._hub_id():
+            return f"{self._topic_base()}/status/{api_key}"
+        return f"{self._topic_base()}/{api_key}/status"
 
     def in_wildcard(self) -> str:
-        return f"{self._prefix()}/+/in"
+        if self._hub_id():
+            return f"{self._topic_base()}/c2s/+"
+        return f"{self._topic_base()}/+/in"
 
     def status_wildcard(self) -> str:
-        return f"{self._prefix()}/+/status"
+        if self._hub_id():
+            return f"{self._topic_base()}/status/+"
+        return f"{self._topic_base()}/+/status"
 
     def master_status_topic(self) -> str:
-        return f"{self._prefix()}/{self.identity.name or 'master'}/status"
+        return self.status_topic(self.identity.name or "master")
+
+    def _broker_client_id(self) -> str:
+        explicit = self._cfg("client_id")
+        if explicit:
+            return str(explicit)
+        base = f"hivemind-{self._hub_id() or self.identity.name or 'master'}"
+        suffix = self._cfg("client_id_suffix")
+        if suffix is None:
+            suffix = os.getenv("HOSTNAME")
+        if not suffix:
+            return base
+        digest = hashlib.sha1(str(suffix).encode("utf-8")).hexdigest()[:10]
+        return f"{base}-{digest}"
 
     # api_key extraction -----------------------------------------------
 
@@ -135,8 +193,19 @@ class HiveMindMqttProtocol(NetworkProtocol):
     def _api_key_from_topic(topic: str) -> Optional[str]:
         """Extract the api_key segment from <prefix>/<api_key>/<direction>."""
         parts = topic.split("/")
+        if len(parts) >= 4 and parts[-2] in {"c2s", "s2c", "status"}:
+            return parts[-1]
         if len(parts) >= 3:
             return parts[-2]
+        return None
+
+    @staticmethod
+    def _direction_from_topic(topic: str) -> Optional[str]:
+        parts = topic.split("/")
+        if len(parts) >= 4 and parts[-2] in {"c2s", "s2c", "status"}:
+            return parts[-2]
+        if len(parts) >= 3:
+            return parts[-1]
         return None
 
     # ------------------------------------------------------------------
@@ -222,11 +291,14 @@ class HiveMindMqttProtocol(NetworkProtocol):
 
     def _on_connect(self, client: mqtt.Client, userdata: Any, flags: Any, rc: int) -> None:
         if rc != 0:
+            self._set_broker_ready(False)
             LOG.error(f"[MQTT] Broker connection failed, rc={rc}")
             return
         LOG.info("[MQTT] Connected to broker")
         client.subscribe(self.in_wildcard(), qos=self._qos())
         client.subscribe(self.status_wildcard(), qos=1)
+        client.publish(self.master_status_topic(), _ONLINE, qos=1, retain=True)
+        self._set_broker_ready(True)
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
         topic: str = msg.topic
@@ -237,8 +309,11 @@ class HiveMindMqttProtocol(NetworkProtocol):
             LOG.warning(f"[MQTT] Unexpected topic shape: {topic!r}")
             return
 
-        direction = parts[-1]   # "in", "out", or "status"
-        api_key = parts[-2]
+        direction = self._direction_from_topic(topic)
+        api_key = self._api_key_from_topic(topic)
+        if not direction or not api_key:
+            LOG.warning(f"[MQTT] Unexpected topic shape: {topic!r}")
+            return
 
         if direction == "status":
             # The master publishes its own presence to
@@ -253,7 +328,7 @@ class HiveMindMqttProtocol(NetworkProtocol):
                 self._disconnect_peer(api_key)
             return
 
-        if direction != "in":
+        if direction not in {"in", "c2s"}:
             return
 
         with self._lock:
@@ -298,6 +373,7 @@ class HiveMindMqttProtocol(NetworkProtocol):
         return bytes(payload)
 
     def _on_disconnect(self, client: mqtt.Client, userdata: Any, rc: int) -> None:
+        self._set_broker_ready(False)
         if rc != 0:
             LOG.warning(f"[MQTT] Unexpected broker disconnect, rc={rc}")
 
@@ -320,12 +396,15 @@ class HiveMindMqttProtocol(NetworkProtocol):
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        LOG.debug(f"[MQTT] protocol config: {self.config}")
-
         broker_host: str = str(self._cfg("broker_host") or "localhost")
         broker_port: int = int(self._cfg("broker_port") or 1883)
+        LOG.debug(
+            f"[MQTT] protocol configured for broker={broker_host}:{broker_port}, "
+            f"tls={bool(self._cfg('tls', False))}"
+        )
+        self._set_broker_ready(False)
 
-        self._mqtt = mqtt.Client(client_id=f"hivemind-{self.identity.name or 'master'}")
+        self._mqtt = mqtt.Client(client_id=self._broker_client_id())
 
         username: Optional[str] = self._cfg("broker_username")
         password: Optional[str] = self._cfg("broker_password")
@@ -338,6 +417,13 @@ class HiveMindMqttProtocol(NetworkProtocol):
                 certfile=self._cfg("tls_certfile"),
                 keyfile=self._cfg("tls_keyfile"),
             )
+            if self._cfg("tls_insecure", False):
+                LOG.warning("[MQTT] TLS certificate verification is explicitly disabled")
+                self._mqtt.tls_insecure_set(True)
+
+        reconnect_min = max(1, int(self._cfg("reconnect_min_delay", 1)))
+        reconnect_max = max(reconnect_min, int(self._cfg("reconnect_max_delay", 30)))
+        self._mqtt.reconnect_delay_set(min_delay=reconnect_min, max_delay=reconnect_max)
 
         master_status = self.master_status_topic()
         self._mqtt.will_set(master_status, _OFFLINE, qos=1, retain=True)
@@ -346,8 +432,7 @@ class HiveMindMqttProtocol(NetworkProtocol):
         self._mqtt.on_message = self._on_message
         self._mqtt.on_disconnect = self._on_disconnect
 
-        self._mqtt.connect(broker_host, broker_port, keepalive=60)
-        self._mqtt.publish(master_status, _ONLINE, qos=1, retain=True)
+        self._mqtt.connect_async(broker_host, broker_port, keepalive=60)
 
         # Missing/None → default; any value <= 0 disables the sweep entirely.
         raw_idle = self._cfg("idle_timeout")
@@ -359,4 +444,7 @@ class HiveMindMqttProtocol(NetworkProtocol):
             ).start()
 
         LOG.info(f"[MQTT] listener started — broker={broker_host}:{broker_port}")
-        self._mqtt.loop_forever()
+        try:
+            self._mqtt.loop_forever(retry_first_connection=True)
+        finally:
+            self._set_broker_ready(False)

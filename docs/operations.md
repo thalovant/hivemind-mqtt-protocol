@@ -78,6 +78,8 @@ require_certificate false
 
 Set `tls: true` and `broker_port: 8883` in the plugin config. Point
 `tls_ca_certs` at the CA certificate that signed the broker's cert.
+Do not use `tls_insecure` as a substitute for distributing the broker CA in
+production.
 
 ## Home Assistant integration
 
