@@ -1,3 +1,7 @@
+permissions:
+  contents: read
+  pull-requests: write
+
 name: Build Tests
 
 on:
@@ -7,8 +11,9 @@ on:
 
 jobs:
   build:
-    uses: OpenVoiceOS/gh-automations/.github/workflows/build-tests.yml@dev
+    uses: OpenVoiceOS/gh-automations/.github/workflows/build-tests.yml@e1770fb608f8c39ab886ff336f6470ee17747b0d # dev
     with:
       python_versions: '["3.10", "3.11", "3.12", "3.13", "3.14"]'
       install_extras: 'e2e'
       test_path: 'tests/'
+      pr_comment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}

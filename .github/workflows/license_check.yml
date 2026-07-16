@@ -1,3 +1,7 @@
+permissions:
+  contents: read
+  pull-requests: write
+
 name: License Check
 
 on:
@@ -7,10 +11,11 @@ on:
 
 jobs:
   license_check:
-    uses: OpenVoiceOS/gh-automations/.github/workflows/license-check.yml@dev
+    uses: OpenVoiceOS/gh-automations/.github/workflows/license-check.yml@e1770fb608f8c39ab886ff336f6470ee17747b0d # dev
     with:
       # paho-mqtt is dual-licensed "EPL-2.0 OR BSD-3-Clause"; we take the permissive
       # BSD-3-Clause option (Apache-2.0 compatible). pilosus flags the dual identifier
       # as WeakCopyleft on the EPL alternative, so exclude it by name. The package
       # itself is git-installed (no PyPI license metadata), so exclude it too.
       exclude_packages: "(?i:^(paho-mqtt|hivemind-mqtt-protocol)([=<>!~ @;].*)?$)"
+      pr_comment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
