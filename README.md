@@ -1,3 +1,5 @@
+Last Edit: Codex (GPT-6) - 2026-09-30 - Motive: Add missing license files and document verified repository languages.
+
 # hivemind-mqtt-protocol
 
 An MQTT broker-mediated network protocol plugin for [hivemind-core](https://github.com/JarbasHiveMind/hivemind-core).
@@ -157,3 +159,9 @@ The plugin registers under the `hivemind.network.protocol` entry-point group as
 ```bash
 pip install hivemind-mqtt-protocol
 ```
+
+## Repository metadata (2026-09-30)
+
+- License: [Apache-2.0](LICENSE).
+- Programming languages reported by GitHub: Python.
+- License basis: Existing [pyproject.toml](pyproject.toml) declaration.
