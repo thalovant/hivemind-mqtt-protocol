@@ -1,6 +1,8 @@
-Last Edit: Codex (GPT-6) - 2026-09-30 - Motive: Add missing license files and document verified repository languages.
-
 # Audit
+
+## 2026-11-15 - Per-file author/date/motive headers
+
+Finding: 7 files carried an author/date/motive header line that the owner has withdrawn. State: fixed in this change (a case-insensitive `git grep` for the header keyword is empty). No code path was touched, so no test result changes; the repository's CI on the pull request is the test of record.
 
 ## 2026-09-30: license and language metadata
 
