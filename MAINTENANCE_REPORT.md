@@ -1,6 +1,18 @@
-Last Edit: Codex (GPT-6) - 2026-09-30 - Motive: Add missing license files and document verified repository languages.
-
 # Maintenance report
+
+## 2026-11-15 - Removed the per-file author/date/motive headers
+
+Rationale: the workspace owner withdrew the per-file author/date/motive header convention (hard rule: no such header anywhere). Removed the header line (and the blank line after it) from every file that carried one, 7 files in this change. No code, behaviour or documentation content changed; only the header lines.
+
+Verification: a case-insensitive `git grep` for the header keyword (the two words "last" and "edit" joined by a space) finds nothing after the change; `git diff --stat` shows deletions only.
+
+Verification (added 2026-11-15): the red e2e checks are not caused by this change. `pytest tests -q` on `dev` and on this branch both give 83 passed, 10 errors; details and root cause in [AUDIT.md](AUDIT.md). The AUDIT.md entry was written by Claude Sonnet 5.5 (Claude Code) from the local reproduction; no human has reviewed it.
+
+### Transparency report
+
+- **AI model**: Claude Sonnet 5.5 (Claude Code).
+- **Actions taken**: ran a script that deletes the header line (plain, in `<!-- -->` or `/* */` comments, or marked as a previous header) and the blank line that followed a leading header; edited this report and AUDIT.md.
+- **Oversight**: requested by the owner; the diff was reviewed as deletions only; CI runs on the pull request.
 
 ## 2026-09-30: license and language metadata
 
