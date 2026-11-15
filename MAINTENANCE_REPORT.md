@@ -6,6 +6,8 @@ Rationale: the workspace owner withdrew the per-file author/date/motive header c
 
 Verification: a case-insensitive `git grep` for the header keyword (the two words "last" and "edit" joined by a space) finds nothing after the change; `git diff --stat` shows deletions only.
 
+Verification (added 2026-11-15): the red e2e checks are not caused by this change. `pytest tests -q` on `dev` and on this branch both give 83 passed, 10 errors; details and root cause in [AUDIT.md](AUDIT.md). The AUDIT.md entry was written by Claude Sonnet 5.5 (Claude Code) from the local reproduction; no human has reviewed it.
+
 ### Transparency report
 
 - **AI model**: Claude Sonnet 5.5 (Claude Code).
